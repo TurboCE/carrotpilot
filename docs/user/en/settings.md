@@ -282,6 +282,8 @@ Deceleration preview operates independently of the response level. During active
 
 For Hyundai/Kia CANFD openpilot longitudinal control, aReqRaw and aReqValue become zero in the first StopReq frame, so this setting does not change transmitted acceleration while StopReq remains active. Automatic release/retry is removed.
 
+On supported GM Traverse, Trailblazer and Trax vehicles, selecting camera longitudinal control with `AlphaLongitudinalEnabled` also enables manual auto hold. While disengaged, press the brake firmly at low speed and come to a complete stop to hold; acceleration, engagement, or a second light brake press and release cancels it. Cruise-only models and gas-interceptor configurations are excluded. Fresh CAN inputs and Panda safety firmware supporting this feature are required. There is no separate auto-hold toggle. See [GM auto-hold conditions](gm.md).
+
 On supported Tesla vehicles, [automatic cruise set-speed adjustment](tesla.md#automatic-cruise-speed) requires the additional vehicle bus, **alpha longitudinal** (`AlphaLongitudinalEnabled`) and Carrot Web's `TeslaAutoSpeedLimit`. The new switch defaults to OFF and requires a full restart after changes. Navigation/Carrot speed control still takes precedence and pauses DAS-based adjustment until it ends and the limit is stable again; any manual pause remains in effect. Turning the right speed wheel pauses it; an opposite-direction wheel gesture within one second or disengaging and re-engaging resumes it. OFF stops automatic wheel output without disabling manual scrolling.
 
 <a id="vehicle-hardware"></a>

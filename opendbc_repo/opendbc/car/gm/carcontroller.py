@@ -5,8 +5,9 @@ import numpy as np
 from opendbc.can.packer import CANPacker
 from opendbc.car import Bus, DT_CTRL, apply_driver_steer_torque_limits, structs, create_gas_interceptor_command
 from opendbc.car.gm import gmcan
+from opendbc.car.gm.manual_auto_hold import manual_hold_supported
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons, GMFlags, CC_ONLY_CAR, EV_CAR, AccState, CC_REGEN_PADDLE_CAR, CAR
+from opendbc.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons, GMFlags, GMSafetyFlags, CC_ONLY_CAR, EV_CAR, AccState, CC_REGEN_PADDLE_CAR, CAR
 from opendbc.car.gm.values import FROGPILOT_STEER_TIMING_CAR
 from opendbc.car.interfaces import CarControllerBase
 from openpilot.selfdrive.controls.lib.drive_helpers import apply_deadzone
@@ -15,6 +16,7 @@ from openpilot.selfdrive.car.cruise import VCruiseCarrot
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 NetworkLocation = structs.CarParams.NetworkLocation
+GearShifter = structs.CarState.GearShifter
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 # Camera cancels up to 0.1s after brake is pressed, ECM allows 0.5s
@@ -143,6 +145,8 @@ class CarController(CarControllerBase):
       can_sends.append(gmcan.create_steering_control(self.packer_pt, CanBus.POWERTRAIN, apply_torque, idx, CC.latActive))
 
     if self.CP.openpilotLongitudinalControl:
+      hold = getattr(CS, "manual_auto_hold", None)
+      manual_brake = hold.command(CS.out, CC.enabled or CC.longActive) if hold is not None and manual_hold_supported(self.CP) else 0
 
       if self.CP.carFingerprint in (CAR.CHEVROLET_VOLT):
         button_counter = (CS.buttons_counter + 1) % 4
@@ -165,15 +169,16 @@ class CarController(CarControllerBase):
             self.activateCruise_after_brake = True # 브레이크신호는 한번만 보내고 초기화
       else:
         auto_cruise_control = self.v_cruise_carrot.autoCruiseControl
-        if (CS.out.activateCruise or auto_cruise_control > 0) and \
+        if not manual_brake and (CS.out.activateCruise or auto_cruise_control > 0) and \
            not CS.out.cruiseState.enabled:
           if (self.frame - self.last_button_frame) * DT_CTRL > 0.04:
             self.last_button_frame = self.frame
             can_sends.append(gmcan.create_buttons(self.packer_pt, CanBus.POWERTRAIN, (CS.buttons_counter + 1) % 4, CruiseButtons.DECEL_SET))
         
       # Gas/regen, brakes, and UI commands - all at 25Hz
-      if self.frame % 4 == 0:
-      # GM: softHold
+      longitudinal_command_due, idx = gmcan.get_longitudinal_command_timing(self.CP, CS, self.frame)
+      if longitudinal_command_due:
+        # GM: softHold
         stopping = actuators.longControlState == LongCtrlState.stopping or CS.out.softHoldActive > 0
 
         # Pitch compensated acceleration;
@@ -220,7 +225,6 @@ class CarController(CarControllerBase):
           press_regen_paddle = False
           self.apply_gas = self.params.INACTIVE_REGEN
 
-        idx = (self.frame // 4) % 4
 
         if self.CP.flags & GMFlags.CC_LONG.value:
           if CC.longActive and CS.out.vEgo > self.CP.minEnableSpeed:
@@ -238,7 +242,8 @@ class CarController(CarControllerBase):
           # TODO: can we always check the longControlState?
           if self.CP.networkLocation == NetworkLocation.fwdCamera and self.CP.carFingerprint not in CC_ONLY_CAR:
             at_full_stop = at_full_stop and stopping
-            friction_brake_bus = CanBus.POWERTRAIN
+            sdgm_brake = self.CP.safetyConfigs[0].safetyParam & GMSafetyFlags.HW_SDGM
+            friction_brake_bus = CanBus.CAMERA if sdgm_brake else CanBus.POWERTRAIN
 
 
           if self.CP.autoResumeSng:
@@ -250,19 +255,43 @@ class CarController(CarControllerBase):
           else:
             acc_engaged = CC.enabled
 
-          if actuators.longControlState in [LongCtrlState.stopping, LongCtrlState.starting]:
+          self.apply_gas, self.apply_brake, at_full_stop, near_stop = gmcan.apply_driver_gas_override(
+            self.CP.carFingerprint, CS.out.gasPressed, self.params.INACTIVE_REGEN,
+            self.apply_gas, self.apply_brake, at_full_stop, near_stop,
+          )
+          self.apply_gas, self.apply_brake, at_full_stop, near_stop, acc_engaged = gmcan.apply_stock_longitudinal_gate(
+            self.CP.carFingerprint, CS.cam_stock_long_active, self.params.INACTIVE_REGEN,
+            self.apply_gas, self.apply_brake, at_full_stop, near_stop, acc_engaged,
+          )
+
+          # SDGM must never restore longitudinal authority while disengaged.
+          if self.CP.safetyConfigs[0].safetyParam & GMSafetyFlags.HW_SDGM:
+            acc_engaged = acc_engaged and CC.enabled
+
+          if not manual_brake and actuators.longControlState in [LongCtrlState.stopping, LongCtrlState.starting]:
             if (self.frame - self.last_button_frame) * DT_CTRL > 0.04:
               self.last_button_frame = self.frame
               can_sends.append(gmcan.create_buttons(self.packer_pt, CanBus.POWERTRAIN, (CS.buttons_counter + 1) % 4, CruiseButtons.RES_ACCEL))
           # GasRegenCmdActive needs to be 1 to avoid cruise faults. It describes the ACC state, not actuation
           can_sends.append(gmcan.create_gas_regen_command(self.packer_pt, CanBus.POWERTRAIN, self.apply_gas, idx, acc_engaged, at_full_stop))
+          if manual_brake:
+            self.apply_brake = manual_brake
+            near_stop, at_full_stop = True, False
           can_sends.append(gmcan.create_friction_brake_command(self.packer_ch, friction_brake_bus, self.apply_brake,
                                                                idx, CC.enabled, near_stop, at_full_stop, self.CP))
 
           # Send dashboard UI commands (ACC status)
           send_fcw = hud_alert == VisualAlert.fcw
-          can_sends.append(gmcan.create_acc_dashboard_command(self.packer_pt, CanBus.POWERTRAIN, CC.enabled,
-                                                              hud_v_cruise * CV.MS_TO_KPH, hud_control, send_fcw))
+          is_trailblazer = self.CP.carFingerprint == CAR.CHEVROLET_TRAILBLAZER
+          stock_acc_status = CS.cam_acc_status if is_trailblazer else None
+          dashboard_enabled = gmcan.get_acc_dashboard_enabled(
+            self.CP.carFingerprint, CC.enabled, CS.out.gearShifter == GearShifter.drive,
+            CS.cam_stock_long_active, stock_acc_status,
+          )
+          if not is_trailblazer or stock_acc_status is not None:
+            can_sends.append(gmcan.create_acc_dashboard_command(self.packer_pt, CanBus.POWERTRAIN, dashboard_enabled,
+                                                                hud_v_cruise * CV.MS_TO_KPH, hud_control, send_fcw,
+                                                                stock_acc_status))
       else:
         # to keep accel steady for logs when not sending gas
         accel += self.accel_g

@@ -3,12 +3,15 @@ import json
 import os
 from openpilot.cereal import car
 from math import fabs, exp
+from time import monotonic_ns
 from openpilot.common.params import Params
-from opendbc.car import get_safety_config, get_friction, structs
+from opendbc.car import Bus, get_safety_config, get_friction, structs
 from opendbc.car.common.basedir import BASEDIR
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.gm.carcontroller import CarController
 from opendbc.car.gm.carstate import CarState
+from opendbc.car.gm.gmcan import is_trailblazer_camera_longitudinal
+from opendbc.car.gm.manual_auto_hold import MANUAL_HOLD_CARS
 from opendbc.car.gm.radar_interface import RadarInterface, RADAR_HEADER_MSG
 from opendbc.car.gm.values import CAR, CarControllerParams, EV_CAR, CAMERA_ACC_CAR, CanBus, GMFlags, CC_ONLY_CAR, SDGM_CAR, CruiseButtons, GMSafetyFlags, ALT_ACCS
 from opendbc.car.interfaces import CarInterfaceBase, TorqueFromLateralAccelCallbackType, FRICTION_THRESHOLD, LatControlInputs, NanoFFModel
@@ -38,6 +41,41 @@ class CarInterface(CarInterfaceBase):
   CarState = CarState
   CarController = CarController
   RadarInterface = RadarInterface
+
+  def _update_manual_hold(self, c=None, now_nanos=None):
+    hold = self.CS.manual_auto_hold
+    if hold is not None:
+      if c is not None:
+        self.CS.manual_hold_controls_active = c.enabled or c.longActive
+      now_nanos = monotonic_ns() if now_nanos is None else now_nanos
+      signals = (("ECMAcceleratorPos", "BrakePedalPos"), ("ECMEngineStatus", "BrakePressed"),
+                 ("AcceleratorPedal2", "AcceleratorPedal2"), ("EBCMWheelSpdFront", "FLWheelSpd"),
+                 ("EBCMWheelSpdRear", "RLWheelSpd"), ("ECMPRDNL2", "PRNDL2"),
+                 ("BCMGeneralPlatformStatus", "ParkBrakeSwActive"))
+      checks = [(Bus.pt, msg, signal, 500_000_000) for msg, signal in signals]
+      if is_trailblazer_camera_longitudinal(self.CS.CP):
+        # Its brake frames follow the stock camera's 0x2CB counter and 0x370
+        # template; without fresh references none is sent, so drop the hold.
+        checks += [(Bus.cam, "ASCMGasRegenCmd", "RollingCounter", 200_000_000),
+                   (Bus.cam, "ASCMActiveCruiseControlStatus", "ACCCmdActive", 200_000_000)]
+      fresh = True
+      for bus, msg, signal, max_age in checks:
+        ts = self.can_parsers[bus].ts_nanos.get(msg, {}).get(signal, 0)
+        fresh = fresh and 0 < ts <= now_nanos and now_nanos - ts <= max_age
+      if fresh:
+        hold.update(self.CS.out, self.CS.brake_pedal_position, self.CS.manual_hold_controls_active)
+      else:
+        hold.reset()
+      self.CS.out.brakeHoldActive = hold.active
+
+  def update(self, can_packets):
+    ret = super().update(can_packets)
+    self._update_manual_hold()
+    return ret
+
+  def apply(self, c, now_nanos=None, model_v2=None, radar_state=None):
+    self._update_manual_hold(c, now_nanos)
+    return super().apply(c, now_nanos, model_v2, radar_state)
 
   @staticmethod
   def get_pid_accel_limits(CP, current_speed, cruise_speed):
@@ -122,7 +160,7 @@ class CarInterface(CarInterfaceBase):
     ret.longitudinalTuning.kiBP = [0.]
 
     if candidate in (CAMERA_ACC_CAR | SDGM_CAR):
-      ret.alphaLongitudinalAvailable = candidate not in SDGM_CAR
+      ret.alphaLongitudinalAvailable = (candidate not in SDGM_CAR or candidate == CAR.CHEVROLET_TRAVERSE) and candidate not in ALT_ACCS
       ret.networkLocation = NetworkLocation.fwdCamera
       ret.radarUnavailable = True  # no radar
       ret.pcmCruise = True
@@ -139,10 +177,14 @@ class CarInterface(CarInterfaceBase):
       ret.startingState = True
       ret.startAccel = 1.0
 
-      if alpha_long:
+      if alpha_long and ret.alphaLongitudinalAvailable:
         ret.pcmCruise = False
         ret.openpilotLongitudinalControl = True
         ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.HW_CAM_LONG.value
+        if candidate == CAR.CHEVROLET_TRAVERSE:
+          ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.HW_SDGM.value
+        if candidate in MANUAL_HOLD_CARS and not ret.enableGasInterceptorDEPRECATED:
+          ret.safetyConfigs[0].safetyParam |= GMSafetyFlags.MANUAL_AUTO_HOLD.value
 
       if candidate in ALT_ACCS:
         ret.alphaLongitudinalAvailable = False
@@ -283,6 +325,8 @@ class CarInterface(CarInterfaceBase):
 
     elif candidate in (CAR.CHEVROLET_TRAILBLAZER, CAR.CHEVROLET_TRAILBLAZER_CC):
       ret.steerActuatorDelay = 0.2
+      if candidate == CAR.CHEVROLET_TRAILBLAZER and ret.openpilotLongitudinalControl:
+        ret.minEnableSpeed = 5 * CV.KPH_TO_MS
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
 
     elif candidate in (CAR.CHEVROLET_SUBURBAN, CAR.CHEVROLET_SUBURBAN_CC):
