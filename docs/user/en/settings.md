@@ -197,6 +197,20 @@ Previously ignored ID.4 values now take effect. For example, with `CustomSR=0`, 
 
 `LateralTorqueCustom` and `CustomSteer*` are advanced settings that can affect the vehicle tune and safety limits. Do not alter them without a vehicle-specific validated baseline and a recovery path.
 
+On Traverse, Trailblazer (including CC) and Trax, `CustomSteerMax` is capped at 300. Other GM vehicles retain their previous handling. In Traverse logs the torque the EPS reported (`LKATorqueDelivered`) stayed at about 3.00 while commands were above roughly 300; commands between 300 and 400 only delayed torque release.
+
+The Chevrolet Traverse, Trailblazer and Trax send LKA torque commands at about 33 Hz (every 3 frames) with default steps of +10 up and -15 down, matching FrogPilot (the Trailblazer and Trax use the Traverse values and have not been checked in the car), so 0 to 300 takes about 0.9 s. A `CustomSteerDeltaUp`/`CustomSteerDeltaDown` above 0 overrides these steps. The values validated on the Traverse are exactly 10/15; larger values need their own check against the panda safety limits. With lower values such as 6/8, logs show torque lagging the request in large curves and the wheel winding and unwinding.
+
+With `NNFF` on, the Traverse uses the Trailblazer NNFF model as a substitute. With `NNFF` on, the Traverse, Trailblazer and Trax use, like FrogPilot's NNFF, the NN low-speed table, the steering-rate jerk input and a jerk window based on the lateral delay. NNFF on other vehicles is unchanged.
+
+On these GM vehicles, full NNFF receives calibrated pose before computing torque and uses valid live delay for its future inputs. Its integral follows FrogPilot's conditional integration, with applied-torque feedback updated during AlwaysLateral too. NN input history clears on disengagement, and a zero-jerk frame does not permanently change later friction weighting. This does not change stored Kp/Ki/Kf or remove the EPS torque limit; same-input log comparisons do not establish improved road tracking. NNFF Lite retains its existing behavior.
+
+Full NNFF uses the model target directly on these vehicles. `UseLaneLineSpeed` and the separate Carrot lane planner do not select the steering target in this path, and the additional control-stage 0.1-second target filter is bypassed. The target acceleration limit follows FrogPilot's 3 m/s² plus roll compensation. Other vehicles and NNFF Lite retain their existing target selection and limits.
+
+For this full-NNFF path, `LatSmoothSec` supplies the fixed model smoothing time to both modeld and the NNFF jerk horizon. A valid positive `SteerActuatorDelay` (0.01–1.0 seconds) overrides learned delay consistently; zero uses learned delay. Automatic delay estimation follows FrogPilot's signal/lag-range policy. Turning off manual torque tuning restores the vehicle's default torque factors and PID gains on these vehicles.
+
+Explicit donor models are Traverse → Trailblazer, Trailblazer CC → Trailblazer, and Trax → Volt, only when `NNFF` is enabled. This changes model selection, not vehicle or safety parameters, and does not establish road validation of the donor model on each vehicle. No curvature-dependent Kp/Ki/Kf scheduling is added.
+
 #### NNFF torque control
 
 `NNFF` is a neural-network feedforward option that defaults to off. Enabling selects torque-controller tuning on vehicles without angle control and uses NNFF when a matching model is available. Vehicles supported by comma's own NNFF retain that path's precedence; angle-control vehicles are unaffected.

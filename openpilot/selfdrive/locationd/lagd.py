@@ -12,6 +12,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose, fft_next_good_size, parabolic_peak_interp
+from opendbc.car.gm.values import FROGPILOT_STEER_TIMING_CAR
 
 BLOCK_SIZE = 100
 BLOCK_NUM = 50
@@ -179,6 +180,7 @@ class LateralLagEstimator:
     self.okay_window_sec = okay_window_sec
     self.min_recovery_buffer_sec = min_recovery_buffer_sec
     self.initial_lag = CP.steerActuatorDelay + 0.2
+    self.nnff_frogpilot_parity = CP.carFingerprint in FROGPILOT_STEER_TIMING_CAR and Params().get_bool("NNFF")
     self.block_size = block_size
     self.block_count = block_count
     self.min_valid_block_count = min_valid_block_count
@@ -230,8 +232,14 @@ class LateralLagEstimator:
     else:
       liveDelay.status = log.LiveDelayData.Status.unestimated
 
-    if liveDelay.status == log.LiveDelayData.Status.estimated:
-      liveDelay.lateralDelay = min(MAX_LAG, max(MIN_LAG, valid_mean_lag))
+    custom_delay = Params().get_float("SteerActuatorDelay") * 0.01 if self.nnff_frogpilot_parity else 0.0
+    if np.isfinite(custom_delay) and 0.01 <= custom_delay <= MAX_LAG:
+      # Match the delay already selected by modeld and FrogPilot's explicit
+      # override path. Zero keeps the learned-delay selection below.
+      liveDelay.lateralDelay = custom_delay
+    elif liveDelay.status == log.LiveDelayData.Status.estimated:
+      minimum_lag = 0.0 if self.nnff_frogpilot_parity else MIN_LAG
+      liveDelay.lateralDelay = min(MAX_LAG, max(minimum_lag, valid_mean_lag))
     else:
       liveDelay.lateralDelay = self.initial_lag
 
@@ -309,15 +317,20 @@ class LateralLagEstimator:
 
     times, desired, actual, okay = self.points.get()
     # check if there are any new valid data points since the last update
-    is_valid = self.points_valid() and (actual.max() - actual.min() >= MIN_LAT_ACCEL_RANGE)
+    is_valid = self.points_valid()
+    if not self.nnff_frogpilot_parity:
+      is_valid = is_valid and (actual.max() - actual.min() >= MIN_LAT_ACCEL_RANGE)
     if self.last_estimate_t != 0 and times[0] <= self.last_estimate_t:
       new_values_start_idx = next(-i for i, t in enumerate(reversed(times)) if t <= self.last_estimate_t)
       is_valid = is_valid and not (new_values_start_idx == 0 or not np.any(okay[new_values_start_idx:]))
 
-    desired = masked_symmetric_moving_average(desired, okay, SMOOTH_K, SMOOTH_SIGMA)
-    actual = masked_symmetric_moving_average(actual, okay, SMOOTH_K, SMOOTH_SIGMA)
+    if not self.nnff_frogpilot_parity:
+      desired = masked_symmetric_moving_average(desired, okay, SMOOTH_K, SMOOTH_SIGMA)
+      actual = masked_symmetric_moving_average(actual, okay, SMOOTH_K, SMOOTH_SIGMA)
 
-    delay, corr, confidence = self.actuator_delay(desired, actual, okay, self.dt, MIN_LAG, MAX_LAG)
+    minimum_lag = 0.0 if self.nnff_frogpilot_parity else MIN_LAG
+    delay, corr, confidence = self.actuator_delay(desired, actual, okay, self.dt, minimum_lag, MAX_LAG,
+                                                align_confidence_roi=self.nnff_frogpilot_parity)
     if corr < self.min_ncc or confidence < self.min_confidence or not is_valid:
       return
 
@@ -326,7 +339,7 @@ class LateralLagEstimator:
 
   @staticmethod
   def actuator_delay(expected_sig: np.ndarray, actual_sig: np.ndarray, mask: np.ndarray,
-                     dt: float, min_lag: float, max_lag: float) -> tuple[float, float, float]:
+                     dt: float, min_lag: float, max_lag: float, *, align_confidence_roi: bool = False) -> tuple[float, float, float]:
     assert len(expected_sig) == len(actual_sig)
     min_lag_samples, max_lag_samples, one_sec_samples = int(round(min_lag / dt)), int(round(max_lag / dt)), int(round(1.0 / dt))
     padded_size = fft_next_good_size(len(expected_sig) + max(max_lag_samples, one_sec_samples))
@@ -349,7 +362,10 @@ class LateralLagEstimator:
     good_lag_candidate_mask = confidence_roi_ncc >= ncc_thresh
     good_lag_candidate_edges = np.diff(good_lag_candidate_mask.astype(int), prepend=0, append=0)
     starts, ends = np.where(good_lag_candidate_edges == 1)[0], np.where(good_lag_candidate_edges == -1)[0] - 1
-    run_idx = np.searchsorted(starts, max_corr_index + CORR_BORDER_OFFSET, side='right') - 1
+    peak_index = max_corr_index + roi.start - confidence_roi.start if align_confidence_roi else max_corr_index + CORR_BORDER_OFFSET
+    if align_confidence_roi and not good_lag_candidate_mask[peak_index]:
+      return lag, corr, 0.0
+    run_idx = np.searchsorted(starts, peak_index, side='right') - 1
     width = ends[run_idx] - starts[run_idx] + 1
     confidence = np.clip(1 - width * dt, 0, 1)
 

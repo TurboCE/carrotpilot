@@ -24,6 +24,8 @@ from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.desire_lib.boundary_observer import BoundaryObserver
 from openpilot.selfdrive.controls.lib.desire_lib.tesla_turn import turn_signal_context
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
+from openpilot.selfdrive.controls.lib.drive_helpers import get_nnff_model_smoothing
+from opendbc.car.gm.values import FROGPILOT_STEER_TIMING_CAR
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_INPUTS, POLICY_INPUTS
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_driving_model_data, fill_pose_msg, PublishState
@@ -411,6 +413,7 @@ def main(demo=False):
 
   # TODO this needs more thought, use .2s extra for now to estimate other delays
   # TODO Move smooth seconds to action function
+  nnff_model_policy = CP.carFingerprint in FROGPILOT_STEER_TIMING_CAR and params.get_bool("NNFF")
   lat_delay = CP.steerActuatorDelay + .2 + LAT_SMOOTH_SECONDS
   long_delay = CP.longitudinalActuatorDelay + LONG_SMOOTH_SECONDS
   prev_action = log.ModelDataV2.Action()
@@ -437,6 +440,8 @@ def main(demo=False):
     frame += 1
     if frame % 100 == 0:
       custom_lat_delay = params.get_float("SteerActuatorDelay") * 0.01
+      if nnff_model_policy and (not np.isfinite(custom_lat_delay) or not 0.01 <= custom_lat_delay <= 1.0):
+        custom_lat_delay = 0.0
       lat_smooth_seconds = params.get_float("LatSmoothSec") * 0.01
       long_delay = params.get_float("LongActuatorDelay")*0.01
       vEgoStopping = get_stopping_speed(params)
@@ -561,7 +566,11 @@ def main(demo=False):
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
 
-      lat_smooth_seconds_dynamic, y_std_1s, lat_smooth_extra = get_lat_smooth_seconds_dynamic(
+      if nnff_model_policy:
+        lat_smooth_seconds_dynamic = get_nnff_model_smoothing(lat_smooth_seconds)
+        y_std_1s, lat_smooth_extra = 0.0, 0.0
+      else:
+        lat_smooth_seconds_dynamic, y_std_1s, lat_smooth_extra = get_lat_smooth_seconds_dynamic(
           model_output,
           lat_smooth_seconds,
         )

@@ -19,7 +19,8 @@ from opendbc.car.hyundai.stop_object import signal_stop_object_requested
 from opendbc.car.volkswagen.values import MEB_CURVATURE_PID_KP, MEB_CURVATURE_PID_KI, MEB_CURVATURE_PID_KF, MEB_CURVATURE_MAX
 
 from openpilot.selfdrive.car.voice_indicator import set_lane_change_blinkers
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lag_adjusted_curvature, is_volkswagen_meb
+from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lag_adjusted_curvature, get_model_desired_curvature, is_volkswagen_meb
+from openpilot.selfdrive.controls.lib.drive_helpers import get_nnff_model_smoothing, use_carrot_lane_planner
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl, MIN_LATERAL_CONTROL_SPEED
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -104,6 +105,9 @@ class Controls:
       self.LaC = LatControlPID(self.CP, self.CI)
     elif self.CP.lateralTuning.which() == 'torque':
       self.LaC = LatControlTorque(self.CP, self.CI)
+    if getattr(self.LaC, "nnff_frogpilot_parity", False):
+      self.LaC.update_live_delay(self.CP.steerActuatorDelay,
+                                 get_nnff_model_smoothing(self.params.get_float("LatSmoothSec") * 0.01))
     self.carrot_controls = CarrotControls(self.CP)
 
   def update(self):
@@ -144,6 +148,14 @@ class Controls:
 
     CC = car.CarControl.new_message()
     CC.enabled = self.sm['selfdriveState'].enabled
+    if getattr(self.LaC, "nnff_frogpilot_parity", False):
+      # NNFF consumes pose during state_control, before publish populates CC.
+      if self.calibrated_pose is not None:
+        CC.orientationNED = self.calibrated_pose.orientation.xyz.tolist()
+        CC.angularVelocity = self.calibrated_pose.angular_velocity.xyz.tolist()
+      if self.sm.all_checks(['liveDelay']):
+        smoothing = get_nnff_model_smoothing(self.params.get_float("LatSmoothSec") * 0.01)
+        self.LaC.update_live_delay(self.sm['liveDelay'].lateralDelay, smoothing)
 
     # carrot
     gear = car.CarState.GearShifter
@@ -192,7 +204,9 @@ class Controls:
     # Steering PID loop and lateral MPC
     lat_plan = self.sm['lateralPlan']
     curve_speed_abs = abs(self.sm['carrotMan'].vTurnSpeed)
-    self.lanefull_mode_enabled = (lat_plan.useLaneLines and curve_speed_abs > self.params.get_int("UseLaneLineCurveSpeed"))
+    self.lanefull_mode_enabled = use_carrot_lane_planner(lat_plan.useLaneLines, curve_speed_abs,
+                                                        self.params.get_int("UseLaneLineCurveSpeed"),
+                                                        getattr(self.LaC, "nnff_frogpilot_parity", False))
     if CC.latActive and len(lat_plan.curvatures) > 0 and (lat_plan.useLaneLines if self.is_vw_meb else self.lanefull_mode_enabled):
       lat_smooth_seconds = self.params.get_float("LatSmoothSec") * 0.01
       steer_actuator_delay = self.params.get_float("SteerActuatorDelay") * 0.01
@@ -222,9 +236,11 @@ class Controls:
         curvature = get_lag_adjusted_curvature(self.CP, CS.vEgo, lat_plan.psis, lat_plan.curvatures, steer_actuator_delay + lat_smooth_seconds, lat_plan.distances)
         new_desired_curvature = smooth_value(curvature, self.desired_curvature, lat_smooth_seconds)
     else:      
-      new_desired_curvature = smooth_value(model_v2.action.desiredCurvature, self.desired_curvature, 0.1)
+      new_desired_curvature = get_model_desired_curvature(model_v2.action.desiredCurvature, self.desired_curvature,
+                                                         getattr(self.LaC, "nnff_frogpilot_parity", False))
 
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
+    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll,
+                                                              getattr(self.LaC, "nnff_frogpilot_parity", False))
 
     actuators.curvature = float(self.desired_curvature)
 
@@ -414,7 +430,9 @@ class Controls:
       hudControl.leftLaneDepart = self.sm['driverAssistance'].leftLaneDeparture
       hudControl.rightLaneDepart = self.sm['driverAssistance'].rightLaneDeparture
 
-    if self.sm['selfdriveState'].active:
+    # AlwaysLateral can run NNFF while selfdriveState is disabled. Its limiter
+    # feedback must still follow the applied torque, including while disengaged.
+    if self.sm['selfdriveState'].active or getattr(self.LaC, "nnff_frogpilot_parity", False):
       CO = self.sm['carOutput']
       if self.is_vw_meb:
         # VW MEB: 곡률로 액추에이션하므로 곡률 기반으로 steer_limited 계산 (infiniteCable2 curvatureDEPRECATED 분기와 동일).

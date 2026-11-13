@@ -82,7 +82,27 @@ def smooth_value(val, prev_val, tau, dt=DT_MDL):
   alpha = 1 - np.exp(-dt/tau) if tau > 0 else 1
   return alpha * val + (1 - alpha) * prev_val
 
-def clip_curvature(v_ego, prev_curvature, new_curvature, roll):
+def get_model_desired_curvature(model_curvature, previous_curvature, frogpilot_nnff=False):
+  # NNFF already consumes the model's future trajectory. FrogPilot does not
+  # add another target filter here; retain Carrot's filter for other paths.
+  if frogpilot_nnff:
+    return float(model_curvature)
+  return smooth_value(model_curvature, previous_curvature, 0.1, dt=DT_CTRL)
+
+
+def get_nnff_model_smoothing(base_seconds):
+  # FrogPilot uses the selected model's fixed smoothing time. Share this
+  # policy with modeld so NNFF's jerk horizon describes the target it receives.
+  if base_seconds <= 0.0:
+    return 0.0
+  return float(np.clip(base_seconds, 0.0, 0.60))
+
+
+def use_carrot_lane_planner(use_lane_lines, curve_speed, threshold, frogpilot_nnff=False):
+  return bool(use_lane_lines and curve_speed > threshold and not frogpilot_nnff)
+
+
+def clip_curvature(v_ego, prev_curvature, new_curvature, roll, frogpilot_nnff=False):
   # This function respects ISO lateral jerk and acceleration limits + a max curvature
   v_ego = max(v_ego, MIN_SPEED)
   max_curvature_rate = MAX_LATERAL_JERK / (v_ego ** 2)  # inexact calculation, check https://github.com/commaai/openpilot/pull/24755
@@ -93,7 +113,7 @@ def clip_curvature(v_ego, prev_curvature, new_curvature, roll):
   roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
   # Avoid an abrupt authority drop at 100 km/h. Gradually transition from
   # the low-speed allowance to the high-speed EU-guideline limit.
-  max_lateral_accel_no_roll = float(np.interp(
+  max_lateral_accel_no_roll = MAX_LATERAL_ACCEL_NO_ROLL if frogpilot_nnff else float(np.interp(
     v_ego,
     [80 / 3.6, 120 / 3.6],
     [MAX_LATERAL_ACCEL_NO_ROLL_LOW_SPEED, MAX_LATERAL_ACCEL_NO_ROLL],

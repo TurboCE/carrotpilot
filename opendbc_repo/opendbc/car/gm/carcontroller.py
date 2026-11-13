@@ -7,6 +7,7 @@ from opendbc.car import Bus, DT_CTRL, apply_driver_steer_torque_limits, structs,
 from opendbc.car.gm import gmcan
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.gm.values import DBC, CanBus, CarControllerParams, CruiseButtons, GMFlags, CC_ONLY_CAR, EV_CAR, AccState, CC_REGEN_PADDLE_CAR, CAR
+from opendbc.car.gm.values import FROGPILOT_STEER_TIMING_CAR
 from opendbc.car.interfaces import CarControllerBase
 from openpilot.selfdrive.controls.lib.drive_helpers import apply_deadzone
 from opendbc.car.vehicle_model import ACCELERATION_DUE_TO_GRAVITY
@@ -87,7 +88,8 @@ class CarController(CarControllerBase):
       steerDeltaUp = params.get_int("CustomSteerDeltaUp")
       steerDeltaDown = params.get_int("CustomSteerDeltaDown")
       if steerMax > 0:
-        self.params.STEER_MAX = steerMax
+        self.params.STEER_MAX = (min(steerMax, self.params.STEER_MAX_EPS)
+                               if self.CP.carFingerprint in FROGPILOT_STEER_TIMING_CAR else steerMax)
       if steerDeltaUp > 0:
         self.params.STEER_DELTA_UP = steerDeltaUp
       if steerDeltaDown > 0:
