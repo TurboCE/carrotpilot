@@ -315,8 +315,9 @@ class LatControlTorque(LatControl):
                    + past_rolls + future_rolls
         ff = self.torque_from_nn(nn_input)
 
-        # apply friction override for cars with low NN friction response
-        if self.nn_friction_override:
+        # The scoped GM NNFF path omits the extra linear friction error, as in WIP-FR.
+        # Keep model-requested friction overrides on other cars.
+        if self.nn_friction_override and not self.nnff_frogpilot_parity:
           pid_log.error += self.torque_from_lateral_accel(LatControlInputs(0.0, 0.0, CS.vEgo, CS.aEgo), self.torque_params,
                                                           friction_input, lateral_accel_deadzone, friction_compensation=True, gravity_adjusted=False)
         nn_log = nn_input + nnff_setpoint_input + nnff_measurement_input

@@ -181,6 +181,34 @@ def test_non_parity_keeps_existing_friction_gate(make_controller):
   assert controller.lat_accel_friction_factor == 1.0
 
 
+@pytest.mark.parametrize("fingerprint", [CAR.CHEVROLET_TRAVERSE, CAR.CHEVROLET_TRAILBLAZER,
+                                         CAR.CHEVROLET_TRAILBLAZER_CC, CAR.CHEVROLET_TRAX,
+                                         CAR.CHEVROLET_EQUINOX])
+def test_full_nnff_friction_override_is_omitted_only_for_parity_cars(make_controller, fingerprint):
+  reference, CP = make_controller(fingerprint=fingerprint)
+  controller, _ = make_controller(fingerprint=fingerprint)
+  reference.nn_friction_override = False
+  controller.nn_friction_override = True
+  reference.torque_params.friction = controller.torque_params.friction = 0.18
+  calls = []
+  original = controller.torque_from_lateral_accel
+
+  def record(*args, **kwargs):
+    calls.append(kwargs["friction_compensation"])
+    return original(*args, **kwargs)
+
+  controller.torque_from_lateral_accel = record
+  _, expected = step(reference, CP, 0.0, 0.5, lat_accel=0.5, actual_lat_accel=0.25)
+  _, actual = step(controller, CP, 0.0, 0.5, lat_accel=0.5, actual_lat_accel=0.25)
+  if controller.nnff_frogpilot_parity:
+    assert calls == []
+    assert actual.error == pytest.approx(expected.error, abs=1e-8)
+    assert actual.p == pytest.approx(expected.p, abs=1e-8)
+  else:
+    assert calls == [True]
+    assert actual.error != pytest.approx(expected.error, abs=1e-6)
+
+
 def test_missing_model_does_not_add_friction_to_full_nnff_fallback(make_controller):
   controller, CP = make_controller()
   friction_calls = []

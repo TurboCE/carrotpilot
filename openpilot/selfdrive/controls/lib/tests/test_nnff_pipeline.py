@@ -27,6 +27,20 @@ def test_other_paths_keep_carrot_low_speed_acceleration_limit():
   assert curvature == pytest.approx(4.5 / 15.0 ** 2)
 
 
+@pytest.mark.parametrize("roll", [-0.05, 0.0, 0.05])
+def test_full_nnff_acceleration_band_follows_roll_and_clamps_immediately(roll):
+  from opendbc.car.vehicle_model import ACCELERATION_DUE_TO_GRAVITY as G
+  speed = 15.0
+  for target in (2.8, -2.8, 3.8, -3.8):
+    curvature = target / speed ** 2
+    result, limited = clip_curvature(speed, curvature, curvature, roll, True)
+    expected = min(max(target, roll * G - 3.0), roll * G + 3.0)
+    assert result * speed ** 2 == pytest.approx(expected, abs=1e-9)
+    assert limited == (abs(expected - target) > 1e-9)
+    other, _ = clip_curvature(speed, curvature, curvature, roll)
+    assert other * speed ** 2 == pytest.approx(target, abs=1e-9)
+
+
 def test_full_nnff_still_limits_target_jerk():
   curvature, _ = clip_curvature(20.0, 0.0, 0.1, 0.0, True)
   assert curvature == pytest.approx(5.0 / 20.0 ** 2 * 0.01)
