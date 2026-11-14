@@ -195,13 +195,16 @@ async function loadDeviceParams(groupId, force = false) {
 }
 
 async function loadDeviceNetwork(useCache = true) {
-  if (deviceNetworkInfo && useCache) return deviceNetworkInfo;
+  if (deviceNetworkInfo && useCache) {
+    if (!deviceTailscaleStatus) await loadDeviceTailscale();
+    return deviceNetworkInfo;
+  }
   if (deviceNetworkLoadPromise) return deviceNetworkLoadPromise;
 
   deviceNetworkLoadPromise = requestJson("/api/device_network", { cache: "no-store" })
     .then((payload) => {
       deviceNetworkInfo = payload.network || {};
-      return deviceNetworkInfo;
+      return loadDeviceTailscale().then(() => deviceNetworkInfo);
     })
     .catch((err) => {
       console.error("[DeviceTab]", err);

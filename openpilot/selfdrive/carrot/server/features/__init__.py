@@ -25,6 +25,7 @@ from . import (
   support_terminal,
   system,
   terminal,
+  tailscale,
   tools,
   vision_diag,
   vision_test,
@@ -57,6 +58,7 @@ def register_all(app: web.Application) -> None:
   cars.register(app)
   system.register(app)
   terminal.register(app)
+  tailscale.register(app)
   dashcam.register(app)
   egpu_model.register(app)
   screenrecord.register(app)

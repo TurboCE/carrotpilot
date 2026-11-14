@@ -112,7 +112,8 @@ function wifiSignalLabel(signal) {
 }
 
 function renderNetworkPanel(network) {
-  let html = renderDeviceActionRow(getUIText("advanced", "Advanced"), "", getUIText("view_upper", "VIEW"), "btnDeviceNetworkAdvanced", "smallBtn", true);
+  let html = renderTailscalePanel();
+  html += renderDeviceActionRow(getUIText("advanced", "Advanced"), "", getUIText("view_upper", "VIEW"), "btnDeviceNetworkAdvanced", "smallBtn", true);
   html += renderWifiList(network.wifi || []);
   html += renderDeviceToggleViewRow(getUIText("enable_tethering", "Enable Tethering"), Boolean(network.tethering_enabled));
   html += renderDeviceInfoRow(getUIText("tethering_password", "Tethering Password"), "********");

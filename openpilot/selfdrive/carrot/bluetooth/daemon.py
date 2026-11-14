@@ -192,6 +192,7 @@ def run_reader(trace):
                        last_events=len(last_events), last_fire=len(last_fire), commands=sum(map(len, writer.events.values())),
                        pending_keys=sum(len(decoder.pending_keys) for _, _, decoder in opened.values()))
         atomic_json(RUNTIME / 'status.json', {'time': now, 'stationary': bool(stationary), 'started': bool(started),
+                    'offroad': bool(sm.alive['deviceState'] and sm.valid['deviceState'] and not sm['deviceState'].started),
                     'grabbed': sorted({entry[1] for entry in opened.values()}), 'errors': errors,
                     'last_event': last_event, 'last_events': last_events, 'recent_events': recent_events, 'learning': learning})
   finally:

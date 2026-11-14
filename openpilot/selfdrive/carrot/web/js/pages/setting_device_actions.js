@@ -5,6 +5,7 @@ function bindDeviceTabEvents(container) {
   bindDeviceToggleRows(container);
   bindDevicePersonality(container);
   bindDeviceLanguage(container);
+  bindDeviceTailscale(container);
 
   bindDeviceAction(container, "btnDeviceReboot", "/api/reboot", getUIText("confirm_reboot", "Reboot now?"));
   bindDeviceAction(container, "btnDevicePoweroff", "/api/poweroff", getUIText("power_off_confirm", "Power off device?"));

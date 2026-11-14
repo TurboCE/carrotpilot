@@ -1,5 +1,7 @@
 # Understanding Settings
 
+**Tailscale** under Device → Network provides optional remote access, off by default. Install and sign in with ignition off, approving each device separately. See [connection and disconnection](carrot-web.md#tailscale-remote-access).
+
 [한국어](../ko/settings.md)
 
 With **phone voice** in CarrotAssist 0.2.8, say “Find acceleration settings.” After granting setting access once on the device, say “Set acceleration setting zero to 240.” Direct commands work without ChatGPT or MCP registration. In the same voice session, you can follow a search with “Set the first one to 240”. [Phone voice instructions](carrot-assist.md)

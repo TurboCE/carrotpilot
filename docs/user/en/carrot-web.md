@@ -272,3 +272,14 @@ are cleaned up automatically while offroad. A running retired model remains prot
 until the next boot selects the default and delivery switches the installed active model.
 Jetson cleanup waits for an offroad connection and preserves an ONNX used by any available
 model. Only the selected model is loaded into GPU memory.
+
+
+## Tailscale remote access
+
+Use **Settings → Device → Network → Tailscale** to install and connect. It is off by default and supports ARM64 AGNOS comma devices only. With ignition off and fresh device status available, select **Install** and accept the Tailscale Terms of Service. Internet access and TUN support are required. Installation alone does not enable remote access.
+
+Select **Connect / sign in**, then approve this device in your own Tailscale account using the displayed link or QR code. Connect your phone or PC to the same tailnet and open the displayed IPv4 address at `http://100.x.y.z:7000`. SSH keeps the existing SSH toggle and GitHub key setup; Tailscale SSH is not enabled.
+
+Once connected, the service starts automatically on subsequent boots. **Disconnect** disables automatic startup and retains the login. **Sign out** also logs the running daemon out of its account. If already disconnected, connect first before signing out. Disconnecting remotely may close this page. Each device needs its own account approval; private authentication state is excluded from Git and settings backups.
+
+In the Tailscale admin console, restrict access to trusted users/devices and web port 7000 plus SSH port 22 if needed. Carrot Web includes a terminal and settings writes. Public access (Funnel), subnet sharing and exit nodes are not enabled; the device keeps its existing DNS and internet routes. Video connectivity needs separate checks for your browser and network.
